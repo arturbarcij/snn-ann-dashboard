@@ -27,4 +27,4 @@ npm run dev
 
 Spiking Neural Networks process information using sparse binary spikes, mimicking biological neurons. This dashboard visualises the core trade-off: SNNs achieve ~3.86× energy reduction at a ~1.5% accuracy cost on MNIST, with spike rates as low as 5% in output layers.
 
-Built as part of the thesis: *"Trade-offs in Performance and Computational Efficiency for Spiking Neural Networks"* — DTU / TU Munich, 2026.
+Built as part of the thesis: *"Trade-offs in Performance and Computational Efficiency for Spiking Neural Networks"* — DTU , 2026.
