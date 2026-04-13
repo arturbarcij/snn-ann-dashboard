@@ -191,6 +191,65 @@ h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 /* ─── Scrubber ───────────────────────────────────────── */
+/* ─── Training bar ─────────────────────────────────────────── */
+.train-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg2);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  border: 0.5px solid var(--border);
+}
+
+.train-btn {
+  font-family: monospace;
+  font-size: 11px;
+  padding: 5px 14px;
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  border: 0.5px solid var(--border);
+  color: var(--text);
+  background: var(--bg);
+}
+.train-btn:hover { opacity: 0.8; }
+.train-btn--training, .train-btn--loading { border-color: #D85A30; color: #D85A30; }
+.train-btn--done { border-color: #1D9E75; color: #1D9E75; }
+
+.train-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.train-spinner {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--border);
+  border-top-color: #1D9E75;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.train-badge {
+  margin-left: auto;
+  font-family: monospace;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: #1D9E7522;
+  color: #1D9E75;
+  border: 0.5px solid #1D9E7555;
+}
+
 .scrubber {
   display: flex;
   align-items: center;

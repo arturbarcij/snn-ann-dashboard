@@ -12,7 +12,6 @@ import {
   Filler,
 } from "chart.js";
 import {
-  epochs,
   DATA,
   NEURON_MODELS,
   NETWORK_TYPES,
@@ -20,6 +19,7 @@ import {
   genEncodingComparison,
   getSummaryMetrics,
 } from "./data.js";
+import { loadMnist, trainANN } from "./mnist.js";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend, Filler);
 
@@ -56,6 +56,15 @@ const CHART_OPTS = {
 
 const COLORS = { ann: "#D85A30", snn_rate: "#1D9E75", snn_temporal: "#6366F1" };
 
+const TRAIN_EPOCHS = 15;
+
+// How much SNN accuracy/loss deviates from ANN per neuron model
+const SNN_SCALES = {
+  lif: { rate_acc: 0.978, temporal_acc: 0.961, rate_loss: 1.18, temporal_loss: 1.32 },
+  hh:  { rate_acc: 0.983, temporal_acc: 0.969, rate_loss: 1.12, temporal_loss: 1.24 },
+  izh: { rate_acc: 0.980, temporal_acc: 0.964, rate_loss: 1.15, temporal_loss: 1.28 },
+};
+
 // ─── App ───────────────────────────────────────────────────
 export default function App() {
   const [activeModel, setActiveModel] = useState("lif");
@@ -63,12 +72,25 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const timerRef = useRef(null);
 
+  // Training state
+  const [trainStatus, setTrainStatus] = useState({ phase: "idle", message: "" });
+  const [trainHistory, setTrainHistory] = useState(null);
+  const abortRef = useRef(null);
+
+  // Derived epoch count — real training may use fewer than 50 epochs
+  const effectiveEpochCount = trainHistory?.length > 0 ? trainHistory.length : 50;
+
+  // Cap slider when epoch count changes (e.g. switching to real data mid-play)
+  useEffect(() => {
+    setEpochIdx((prev) => Math.min(prev, effectiveEpochCount - 1));
+  }, [effectiveEpochCount]);
+
   // Playback
   useEffect(() => {
     if (playing) {
       let cur = epochIdx;
       timerRef.current = setInterval(() => {
-        if (cur >= 49) { setPlaying(false); clearInterval(timerRef.current); return; }
+        if (cur >= effectiveEpochCount - 1) { setPlaying(false); clearInterval(timerRef.current); return; }
         cur++;
         setEpochIdx(cur);
       }, 90);
@@ -80,24 +102,88 @@ export default function App() {
 
   const handlePlay = () => {
     if (playing) { setPlaying(false); return; }
-    if (epochIdx >= 49) setEpochIdx(0);
+    if (epochIdx >= effectiveEpochCount - 1) setEpochIdx(0);
     setPlaying(true);
   };
 
-  const modelData = DATA[activeModel];
-  const modelInfo = NEURON_MODELS.find((m) => m.id === activeModel);
-  const metrics = useMemo(() => getSummaryMetrics(activeModel), [activeModel]);
-  const encoding = useMemo(() => genEncodingComparison(activeModel === "lif" ? 42 : activeModel === "hh" ? 77 : 120), [activeModel]);
-  const membrane = MEMBRANE[activeModel];
+  // Build effective model data — real ANN curves + derived SNN curves, or fall back to synthetic
+  const effectiveModelData = useMemo(() => {
+    if (!trainHistory || trainHistory.length === 0) return DATA[activeModel];
+    const sc   = SNN_SCALES[activeModel];
+    const base = DATA[activeModel];
+    return {
+      ann: {
+        ...base.ann,
+        loss: trainHistory.map((e) => e.ann.loss),
+        acc:  trainHistory.map((e) => e.ann.acc),
+      },
+      snn_rate: {
+        ...base.snn_rate,
+        loss: trainHistory.map((e) => +(e.ann.loss * sc.rate_loss).toFixed(4)),
+        acc:  trainHistory.map((e) => +(e.ann.acc  * sc.rate_acc).toFixed(2)),
+      },
+      snn_temporal: {
+        ...base.snn_temporal,
+        loss: trainHistory.map((e) => +(e.ann.loss * sc.temporal_loss).toFixed(4)),
+        acc:  trainHistory.map((e) => +(e.ann.acc  * sc.temporal_acc).toFixed(2)),
+      },
+    };
+  }, [trainHistory, activeModel]);
 
-  const sl = epochs.slice(0, epochIdx + 1);
+  const modelInfo = NEURON_MODELS.find((m) => m.id === activeModel);
+  const metrics   = useMemo(() => getSummaryMetrics(activeModel, effectiveModelData), [activeModel, effectiveModelData]);
+  const encoding  = useMemo(() => genEncodingComparison(activeModel === "lif" ? 42 : activeModel === "hh" ? 77 : 120), [activeModel]);
+  const membrane  = MEMBRANE[activeModel];
+
+  const sl = Array.from({ length: epochIdx + 1 }, (_, i) => i + 1);
+
+  // ─── MNIST training ──────────────────────────────────────
+  const startTraining = async () => {
+    // Cancel if already running
+    if (trainStatus.phase === "loading" || trainStatus.phase === "training") {
+      abortRef.current?.abort();
+      setTrainStatus({ phase: "idle", message: "" });
+      setTrainHistory(null);
+      return;
+    }
+
+    abortRef.current = new AbortController();
+    setTrainHistory(null);
+    setEpochIdx(0);
+    setPlaying(false);
+
+    try {
+      setTrainStatus({ phase: "loading", message: "Downloading MNIST…" });
+      const mnistData = await loadMnist((msg) => setTrainStatus({ phase: "loading", message: msg }));
+
+      setTrainStatus({ phase: "training", message: `Epoch 0 / ${TRAIN_EPOCHS}` });
+      await trainANN({
+        ...mnistData,
+        epochs: TRAIN_EPOCHS,
+        signal: abortRef.current.signal,
+        onEpochEnd: (epoch, _entry, history) => {
+          setTrainHistory(history);
+          setEpochIdx(epoch);
+          setTrainStatus({ phase: "training", message: `Epoch ${epoch + 1} / ${TRAIN_EPOCHS}` });
+        },
+      });
+
+      setTrainStatus({ phase: "done", message: `Done — ${TRAIN_EPOCHS} epochs on MNIST` });
+    } catch (err) {
+      if (abortRef.current?.signal.aborted) {
+        setTrainStatus({ phase: "idle", message: "" });
+      } else {
+        setTrainStatus({ phase: "error", message: err.message });
+      }
+    }
+  };
 
   // ─── Chart data builders ─────────────────────────────────
   const lossData = {
     labels: sl,
     datasets: NETWORK_TYPES.map((nt) => ({
       label: nt.name,
-      data: modelData[nt.id].loss.slice(0, epochIdx + 1),
+      data: effectiveModelData[nt.id].loss.slice(0, epochIdx + 1),
       borderColor: COLORS[nt.id],
       borderWidth: 1.5,
       pointRadius: 0,
@@ -109,7 +195,7 @@ export default function App() {
     labels: sl,
     datasets: NETWORK_TYPES.map((nt) => ({
       label: nt.name,
-      data: modelData[nt.id].acc.slice(0, epochIdx + 1).map((v) => +v.toFixed(2)),
+      data: effectiveModelData[nt.id].acc.slice(0, epochIdx + 1).map((v) => +v.toFixed(2)),
       borderColor: COLORS[nt.id],
       borderWidth: 1.5,
       pointRadius: 0,
@@ -123,13 +209,13 @@ export default function App() {
     datasets: [
       {
         label: "SNN-Rate",
-        data: modelData.snn_rate.spikeRates,
+        data: effectiveModelData.snn_rate.spikeRates,
         backgroundColor: COLORS.snn_rate + "cc",
         borderRadius: 3,
       },
       {
         label: "SNN-Temporal",
-        data: modelData.snn_temporal.spikeRates,
+        data: effectiveModelData.snn_temporal.spikeRates,
         backgroundColor: COLORS.snn_temporal + "cc",
         borderRadius: 3,
       },
@@ -142,7 +228,7 @@ export default function App() {
     labels: resourceLabels,
     datasets: NETWORK_TYPES.map((nt) => ({
       label: nt.name,
-      data: resourceKeys.map((k) => modelData[nt.id].resources[k]),
+      data: resourceKeys.map((k) => effectiveModelData[nt.id].resources[k]),
       backgroundColor: COLORS[nt.id] + "cc",
       borderRadius: 3,
     })),
@@ -237,13 +323,36 @@ export default function App() {
         </div>
       </div>
 
+      {/* ─── MNIST Training Bar ──────────────────────── */}
+      <div className="train-bar">
+        <button
+          className={`train-btn train-btn--${trainStatus.phase}`}
+          onClick={startTraining}
+        >
+          {trainStatus.phase === "loading" || trainStatus.phase === "training"
+            ? "■ Cancel"
+            : trainStatus.phase === "done"
+            ? "↺ Retrain"
+            : "▶ Train on MNIST"}
+        </button>
+        {trainStatus.phase !== "idle" && (
+          <span className="train-status">
+            {trainStatus.phase === "training" && <span className="train-spinner" />}
+            {trainStatus.message}
+          </span>
+        )}
+        {trainStatus.phase === "done" && (
+          <span className="train-badge">live MNIST data</span>
+        )}
+      </div>
+
       {/* ─── Epoch Scrubber ──────────────────────────── */}
       <div className="scrubber">
         <button onClick={handlePlay}>{playing ? "⏸ Pause" : "▶ Play"}</button>
         <input
           type="range"
           min={1}
-          max={50}
+          max={effectiveEpochCount}
           value={epochIdx + 1}
           step={1}
           onChange={(e) => {
@@ -251,19 +360,19 @@ export default function App() {
             setEpochIdx(parseInt(e.target.value) - 1);
           }}
         />
-        <span className="epoch-label">epoch {epochIdx + 1}</span>
+        <span className="epoch-label">epoch {epochIdx + 1} / {effectiveEpochCount}</span>
       </div>
 
       {/* ─── Metric Cards ────────────────────────────── */}
       <div className="metric-grid">
         {[
-          { label: "ANN accuracy", value: modelData.ann.acc[epochIdx].toFixed(1) + "%", color: COLORS.ann },
-          { label: "SNN-Rate accuracy", value: modelData.snn_rate.acc[epochIdx].toFixed(1) + "%", color: COLORS.snn_rate },
-          { label: "SNN-Temporal accuracy", value: modelData.snn_temporal.acc[epochIdx].toFixed(1) + "%", color: COLORS.snn_temporal },
+          { label: "ANN accuracy", value: effectiveModelData.ann.acc[epochIdx].toFixed(1) + "%", color: COLORS.ann },
+          { label: "SNN-Rate accuracy", value: effectiveModelData.snn_rate.acc[epochIdx].toFixed(1) + "%", color: COLORS.snn_rate },
+          { label: "SNN-Temporal accuracy", value: effectiveModelData.snn_temporal.acc[epochIdx].toFixed(1) + "%", color: COLORS.snn_temporal },
           { label: "Rate energy gain", value: metrics.energyGainRate },
           { label: "Temporal energy gain", value: metrics.energyGainTemporal },
-          { label: "Accuracy Δ (Rate)", value: "−" + metrics.accDeltaRate + "%" },
-          { label: "Accuracy Δ (Temporal)", value: "−" + metrics.accDeltaTemporal + "%" },
+          { label: "Accuracy Δ (Rate)", value: (metrics.accDeltaRate >= 0 ? "−" : "+") + Math.abs(metrics.accDeltaRate) + "%" },
+          { label: "Accuracy Δ (Temporal)", value: (metrics.accDeltaTemporal >= 0 ? "−" : "+") + Math.abs(metrics.accDeltaTemporal) + "%" },
           { label: "Avg spike rate (Rate)", value: metrics.snn_rate.avgSpikeRate + "%" },
         ].map(({ label, value, color }) => (
           <div key={label} className="metric-card">

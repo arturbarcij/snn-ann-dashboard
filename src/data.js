@@ -55,7 +55,7 @@ export const NEURON_MODELS = [
     name: "Izhikevich",
     shortName: "Izhikevich",
     description: "Efficient 2-variable model that reproduces most known spiking patterns (regular, bursting, chattering, etc.). Good balance between biological plausibility and computational cost.",
-    equation: "dv/dt = 0.04v² + 5v + 140 - u + I",
+    equation: "dv/dt = 0.04v² + 5v + 140 − u + I;  du/dt = a(bv − u);  if v≥30: v←c, u←u+d",
     params: { a: "0.02", b: "0.2", c: "−65 mV", d: "8" },
   },
 ];
@@ -180,10 +180,15 @@ function genMembraneHH(seed) {
     const iNa = gNa * m * m * m * h * (v - eNa);
     const iK = gK * n * n * n * n * (v - eK);
     const iL = gL * (v - eL);
-    v += dt * (I - iNa - iK - iL) / cm;
-    m += dt * (alphaM(v) * (1 - m) - betaM(v) * m);
-    h += dt * (alphaH(v) * (1 - h) - betaH(v) * h);
-    n += dt * (alphaN(v) * (1 - n) - betaN(v) * n);
+    // Compute all derivatives at current state before updating anything
+    const dv = dt * (I - iNa - iK - iL) / cm;
+    const dm = dt * (alphaM(v) * (1 - m) - betaM(v) * m);
+    const dh = dt * (alphaH(v) * (1 - h) - betaH(v) * h);
+    const dn = dt * (alphaN(v) * (1 - n) - betaN(v) * n);
+    v += dv;
+    m += dm;
+    h += dh;
+    n += dn;
     m = Math.max(0, Math.min(1, m));
     h = Math.max(0, Math.min(1, h));
     n = Math.max(0, Math.min(1, n));
@@ -201,8 +206,11 @@ function genMembraneIzh(seed) {
   const result = [];
   for (let i = 0; i < steps; i++) {
     const I = 14 + (r() - 0.5) * 8;
-    v += dt * (0.04 * v * v + 5 * v + 140 - u + I);
-    u += dt * a * (b * v - u);
+    // Compute both derivatives at current state before updating
+    const dv = dt * (0.04 * v * v + 5 * v + 140 - u + I);
+    const du = dt * a * (b * v - u);
+    v += dv;
+    u += du;
     if (v >= 30) {
       result.push({ t: i * dt, v: 30 });
       v = c;
@@ -260,29 +268,31 @@ export function genEncodingComparison(seed) {
 }
 
 // ─── Summary metrics per model ──────────────────────────────
-export function getSummaryMetrics(modelId) {
-  const d = DATA[modelId];
+// Pass overrideData to use real training data instead of the synthetic DATA.
+export function getSummaryMetrics(modelId, overrideData) {
+  const d    = overrideData || DATA[modelId];
+  const last = d.ann.acc.length - 1;
   return {
     ann: {
-      finalAcc: d.ann.acc[49].toFixed(1),
-      finalLoss: d.ann.loss[49].toFixed(3),
-      power: d.ann.resources.power,
+      finalAcc:  d.ann.acc[last].toFixed(1),
+      finalLoss: d.ann.loss[last].toFixed(3),
+      power:     d.ann.resources.power,
     },
     snn_rate: {
-      finalAcc: d.snn_rate.acc[49].toFixed(1),
-      finalLoss: d.snn_rate.loss[49].toFixed(3),
+      finalAcc:     d.snn_rate.acc[last].toFixed(1),
+      finalLoss:    d.snn_rate.loss[last].toFixed(3),
       avgSpikeRate: (d.snn_rate.spikeRates.reduce((a, b) => a + b, 0) / d.snn_rate.spikeRates.length).toFixed(1),
-      power: d.snn_rate.resources.power,
+      power:        d.snn_rate.resources.power,
     },
     snn_temporal: {
-      finalAcc: d.snn_temporal.acc[49].toFixed(1),
-      finalLoss: d.snn_temporal.loss[49].toFixed(3),
+      finalAcc:     d.snn_temporal.acc[last].toFixed(1),
+      finalLoss:    d.snn_temporal.loss[last].toFixed(3),
       avgSpikeRate: (d.snn_temporal.spikeRates.reduce((a, b) => a + b, 0) / d.snn_temporal.spikeRates.length).toFixed(1),
-      power: d.snn_temporal.resources.power,
+      power:        d.snn_temporal.resources.power,
     },
-    energyGainRate: (100 / d.snn_rate.resources.power).toFixed(2) + "×",
+    energyGainRate:     (100 / d.snn_rate.resources.power).toFixed(2) + "×",
     energyGainTemporal: (100 / d.snn_temporal.resources.power).toFixed(2) + "×",
-    accDeltaRate: (d.ann.acc[49] - d.snn_rate.acc[49]).toFixed(1),
-    accDeltaTemporal: (d.ann.acc[49] - d.snn_temporal.acc[49]).toFixed(1),
+    accDeltaRate:     (d.ann.acc[last] - d.snn_rate.acc[last]).toFixed(1),
+    accDeltaTemporal: (d.ann.acc[last] - d.snn_temporal.acc[last]).toFixed(1),
   };
 }
