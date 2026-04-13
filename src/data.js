@@ -66,6 +66,44 @@ export const NETWORK_TYPES = [
   { id: "snn_temporal", name: "SNN-Temporal", color: "#6366F1", label: "SNN · Temporal Coding" },
 ];
 
+// ─── Energy model ───────────────────────────────────────────
+// Matches the actual MLP trained in mnist.js: 784 → 256 → 128 → 10
+// LAYER_MACS[i] = MACs for the weight matrix FROM layer i-1 TO layer i
+//   Layer 0: Input (784)    — no weights
+//   Layer 1: Dense-256      — 784 × 256 = 200,704
+//   Layer 2: Dense-128      — 256 × 128 = 32,768
+//   Layer 3: Dense-10       — 128 × 10  = 1,280
+//   Layer 4: Output (10)    — no weights (softmax only)
+const LAYER_MACS = [0, 200_704, 32_768, 1_280, 0];
+const ANN_TOTAL_MACS = 234_752; // sum of non-zero entries above
+
+const E_MAC = 4.6; // pJ — multiply-accumulate, 45 nm CMOS (Horowitz 2014)
+const E_AC  = 0.9; // pJ — accumulate only (spike-triggered addition)
+const T_SNN = 10;  // timesteps per inference (rate coding)
+
+// spikeRates[i] = % of neurons active at layer i (post-activation sparsity)
+// For weight layer i, the pre-synaptic spike rate is spikeRates[i-1].
+// power  = SNN energy as % of ANN energy  (E_MAC vs E_AC weighted)
+// flops  = per-timestep SNN ops as % of ANN MACs  (operation count only)
+// latency and memory remain synthetic estimates
+export function computeSnnResources(spikeRates, latency, memory) {
+  let snnEnergy = 0;
+  let snnOps    = 0;
+  for (let i = 1; i < LAYER_MACS.length; i++) {
+    if (LAYER_MACS[i] === 0) continue;
+    const preRate  = spikeRates[i - 1] / 100;
+    snnEnergy += LAYER_MACS[i] * preRate * T_SNN * E_AC;
+    snnOps    += LAYER_MACS[i] * preRate; // per-timestep ops (no E weighting)
+  }
+  const annEnergy = ANN_TOTAL_MACS * E_MAC;
+  return {
+    power:   +((snnEnergy / annEnergy) * 100).toFixed(1), // % of ANN energy
+    flops:   +((snnOps    / ANN_TOTAL_MACS) * 100).toFixed(1), // % of ANN MACs per timestep
+    latency,
+    memory,
+  };
+}
+
 // ─── Generate all data ──────────────────────────────────────
 // Structure: data[modelId][networkTypeId] = { loss, acc, spikeRates, resources, membranePotential }
 
@@ -82,53 +120,62 @@ const annBaseline = {
 };
 
 // --- LIF Model ---
+// Simplest neuron: clean ReLU-like threshold → moderate sparsity
+// Rate: ~18% input activation  →  ~3× energy gain vs ANN
+// Temporal: ~10% input activation  →  ~5.4× energy gain
 DATA.lif = {
   ann: annBaseline,
   snn_rate: {
     loss: genLoss(42, 4.2, 0.108, 0.025),
     acc: genAcc(7, 96.8, 5.5, 0.9),
-    spikeRates: [32, 18, 12, 9, 7, 5],
-    resources: { power: 26, flops: 26, latency: 85, memory: 35 },
+    spikeRates: [18, 10, 7, 4, 2],
+    resources: computeSnnResources([18, 10, 7, 4, 2], 85, 35),
   },
   snn_temporal: {
     loss: genLoss(55, 3.6, 0.145, 0.032),
     acc: genAcc(22, 95.4, 4.8, 1.1),
-    spikeRates: [8, 5, 4, 3, 2, 1.5],
-    resources: { power: 18, flops: 15, latency: 100, memory: 28 },
+    spikeRates: [10, 6, 4, 2, 1],
+    resources: computeSnnResources([10, 6, 4, 2, 1], 100, 28),
   },
 };
 
 // --- Hodgkin-Huxley Model ---
+// Complex ion-channel dynamics → higher baseline activation, less sparsity
+// Rate: ~20% input activation  →  ~2.7× energy gain
+// Temporal: ~10% input activation  →  ~5.3× energy gain
 DATA.hh = {
   ann: annBaseline,
   snn_rate: {
     loss: genLoss(101, 3.5, 0.14, 0.03),
     acc: genAcc(33, 97.2, 4.5, 0.8),
-    spikeRates: [28, 20, 15, 11, 8, 6],
-    resources: { power: 42, flops: 55, latency: 92, memory: 52 },
+    spikeRates: [20, 12, 8, 5, 2],
+    resources: computeSnnResources([20, 12, 8, 5, 2], 92, 52),
   },
   snn_temporal: {
     loss: genLoss(77, 3.0, 0.18, 0.038),
     acc: genAcc(44, 96.1, 4.0, 1.2),
-    spikeRates: [7, 6, 5, 4, 3, 2],
-    resources: { power: 35, flops: 42, latency: 100, memory: 45 },
+    spikeRates: [10, 7, 5, 3, 1],
+    resources: computeSnnResources([10, 7, 5, 3, 1], 100, 45),
   },
 };
 
 // --- Izhikevich Model ---
+// Efficient 2-variable model → slightly lower spike rates than LIF
+// Rate: ~16% input activation  →  ~3.4× energy gain
+// Temporal: ~9% input activation  →  ~6× energy gain
 DATA.izh = {
   ann: annBaseline,
   snn_rate: {
     loss: genLoss(120, 4.5, 0.095, 0.022),
     acc: genAcc(50, 97.5, 5.8, 0.75),
-    spikeRates: [30, 19, 14, 10, 7, 5],
-    resources: { power: 30, flops: 32, latency: 80, memory: 38 },
+    spikeRates: [16, 10, 7, 4, 2],
+    resources: computeSnnResources([16, 10, 7, 4, 2], 80, 38),
   },
   snn_temporal: {
     loss: genLoss(88, 3.8, 0.13, 0.028),
     acc: genAcc(61, 96.2, 5.0, 1.0),
-    spikeRates: [7, 5, 4, 3, 2, 1.8],
-    resources: { power: 22, flops: 20, latency: 95, memory: 30 },
+    spikeRates: [9, 6, 3, 2, 1],
+    resources: computeSnnResources([9, 6, 3, 2, 1], 95, 30),
   },
 };
 

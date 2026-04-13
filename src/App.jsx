@@ -203,7 +203,7 @@ export default function App() {
     })),
   };
 
-  const layerLabels = ["Input", "Conv1", "Conv2", "FC1", "FC2", "Output"];
+  const layerLabels = ["Input", "Dense-256", "Dense-128", "Dense-10", "Output"];
   const spikeData = {
     labels: layerLabels,
     datasets: [
@@ -455,7 +455,7 @@ export default function App() {
           </div>
         </div>
         <div className="card">
-          <p className="chart-label">resource usage — % of ANN baseline</p>
+          <p className="chart-label">resource usage — % of ANN baseline · power = Horowitz E_MAC/E_AC model · flops = ops per timestep</p>
           <div className="chart-wrap">
             <Bar
               data={resourceData}

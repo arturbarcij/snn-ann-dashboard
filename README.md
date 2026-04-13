@@ -7,7 +7,7 @@ An **experimental** interactive dashboard for exploring trade-offs between Spiki
 > [!IMPORTANT]
 > **This is an experimental visualisation tool, not a rigorous benchmark.**
 > - Default training curves are **synthetically generated** (seeded RNG), not measured runs
-> - Energy figures are **illustrative estimates** (ANN = 100 baseline), not hardware measurements
+> - Energy is computed from real MAC counts via the **Horowitz 45 nm CMOS model** — not hardware-profiled
 > - SNN curves during MNIST training are **derived by scaling ANN output**, not trained directly
 > - Neuron dynamics are **simulated in isolation** — not embedded in a real spiking network
 
@@ -55,11 +55,11 @@ Import the repo, set **Framework Preset → Vite**, deploy. Share the URL — an
 | Feature | Details | Data |
 |---|---|---|
 | **Epoch scrubber + playback** | Animate training convergence frame by frame | Synthetic by default; real after MNIST run |
-| **Live MNIST training** | Trains a real ANN (CNN) via TensorFlow.js; SNN curves are derived approximations | ANN = real · SNN = scaled proxy |
+| **Live MNIST training** | Trains a real ANN (MLP) via TensorFlow.js; SNN curves are derived approximations | ANN = real · SNN = scaled proxy |
 | **3 neuron models** | LIF · Hodgkin-Huxley · Izhikevich tabs | Simulated — not trained networks |
 | **Membrane potential traces** | V(t) waveforms showing spiking dynamics | Numerically simulated (not measured) |
 | **Encoding comparison** | Rate coding vs temporal coding side by side | Synthetic spike trains |
-| **Resource efficiency charts** | Power, FLOPS, latency, memory — SNN vs ANN | Normalized estimates, not profiled |
+| **Resource efficiency charts** | Power from Horowitz MAC/AC model; FLOPS = per-timestep ops; latency/memory synthetic | Power & FLOPS computed · rest estimated |
 | **Cross-model summary table** | Final accuracy, energy gain, accuracy delta | Derived from synthetic or scaled data |
 
 ---
@@ -74,7 +74,7 @@ Import the repo, set **Framework Preset → Vite**, deploy. Share the URL — an
 > | ANN loss/accuracy (after clicking Train) | ✅ Real — TensorFlow.js trains on MNIST |
 > | SNN loss/accuracy (after clicking Train) | ⚠️ Approximated — scaled from ANN output |
 > | Default curves (before clicking Train) | ❌ Synthetic — seeded RNG, not training runs |
-> | Energy / power figures | ❌ Synthetic — normalized estimates, not measured |
+> | Energy / power figures | ⚠️ Computed — Horowitz 45 nm CMOS MAC/AC model, not hardware-profiled |
 > | Membrane potential traces | ⚠️ Simulated — numerically integrated in isolation |
 > | Spike rates per layer | ❌ Synthetic — literature-informed estimates |
 
@@ -91,7 +91,7 @@ $$\text{acc}(e) = (\text{maxAcc} - 0.5)\left(1 - e^{-r \cdot e/N}\right) + \vare
 
 where $e$ is the epoch index, $N = 50$, and $k, r, b, A$ are per-model constants tuned to produce plausible divergence between ANN and SNN variants.
 
-Resource values (power, FLOPS, latency, memory) are **normalized estimates** — ANN = 100 as baseline. They reflect the general efficiency advantage of sparse spiking computation but are **not hardware measurements**.
+Spike rates per layer are **literature-informed estimates** — not measured from a trained network. Power and FLOPS are computed from these spike rates using the Horowitz energy model (see [Energy Calculation](#energy-calculation)). Latency and memory remain synthetic.
 
 ---
 
@@ -193,32 +193,63 @@ $$\frac{du}{dt} = a(bv - u)$$
 
 ## Energy Calculation
 
-> [!WARNING]
-> **Energy figures in this dashboard are not measured from hardware.** They are synthetic normalized estimates where ANN = 100 is an arbitrary baseline. Do not interpret these as real power consumption values. They are included to illustrate the *direction* of the efficiency trade-off, not its magnitude.
+> [!NOTE]
+> Energy is computed from real MAC counts of the MNIST MLP and the **Horowitz (2014) 45 nm CMOS** energy-per-operation model. It is not profiled on hardware, but it is grounded in a published cost model rather than arbitrary numbers.
 
-### Formula used in the dashboard
+### Network architecture
 
-$$\text{Energy Gain} = \frac{P_\text{ANN}}{P_\text{SNN}}$$
+The MLP trained in-browser (`mnist.js`) has the following weight layers:
 
-where $P_\text{ANN} = 100$ (fixed baseline) and $P_\text{SNN}$ is set per model and coding scheme.
-
-### Principled estimate (for reference)
-
-$$E_\text{ANN} \propto E_\text{MAC} \times W \times B$$
-
-$$E_\text{SNN} \propto E_\text{spike} \times \bar{r} \times N_\text{neurons} \times T$$
-
-| Symbol | Meaning | Typical value |
+| Layer | Shape | MACs |
 |---|---|---|
-| $E_\text{MAC}$ | Energy per multiply-accumulate | ~4.6 pJ (45 nm CMOS) |
-| $W$ | Total weight connections | — |
-| $B$ | Batch size | — |
-| $E_\text{spike}$ | Energy per synaptic event | ~10 fJ (neuromorphic) |
-| $\bar{r}$ | Mean spike rate across layers | 5–32% (this dashboard) |
-| $N_\text{neurons}$ | Total neuron count | — |
-| $T$ | Simulation timesteps | — |
+| Dense-256 | 784 → 256 | 200,704 |
+| Dense-128 | 256 → 128 | 32,768 |
+| Dense-10  | 128 → 10  | 1,280 |
+| **Total** | | **234,752** |
 
-**Key insight:** SNNs replace dense floating-point MACs with sparse binary additions. At $\bar{r} = 10\%$, only 1 in 10 neurons fires per timestep. Combined with the $E_\text{MAC}/E_\text{spike} \approx 46\times$ ratio on neuromorphic hardware, total energy savings can reach two orders of magnitude for sparse workloads.
+### ANN energy
+
+Every weight fires on every forward pass (dense multiply-accumulate):
+
+$$E_\text{ANN} = N_\text{MAC} \times E_\text{MAC} = 234{,}752 \times 4.6 \text{ pJ} \approx 1{,}080 \text{ nJ per inference}$$
+
+### SNN energy
+
+A weight only activates when its pre-synaptic neuron spikes (sparse accumulate). Summed over all weight layers and $T$ timesteps:
+
+$$E_\text{SNN} = \sum_{l} N_{\text{MAC},l} \times r_{l-1} \times T \times E_\text{AC}$$
+
+where $r_{l-1}$ is the spike rate of the layer feeding into layer $l$.
+
+$$\text{Power (relative)} = \frac{E_\text{SNN}}{E_\text{ANN}} \times 100\%$$
+
+$$\text{Energy Gain} = \frac{E_\text{ANN}}{E_\text{SNN}} = \frac{100}{\text{Power (relative)}}$$
+
+### Constants
+
+| Symbol | Value | Source |
+|---|---|---|
+| $E_\text{MAC}$ | 4.6 pJ | Horowitz, *1.1 Computing's Energy Problem*, ISSCC 2014 |
+| $E_\text{AC}$ | 0.9 pJ | Horowitz 2014 (add only, no multiply) |
+| $T$ | 10 timesteps | Typical rate-coded SNN inference window |
+| $E_\text{MAC} / E_\text{AC}$ | ~5.1× | Operation-level advantage of spike events |
+
+### Computed energy gains
+
+Spike rates per layer are literature-informed estimates (not measured). The formula converts them to energy figures:
+
+| Model | Coding | Input spike rate | Power (% of ANN) | Energy gain |
+|---|---|---|---|---|
+| LIF | Rate | 18% | 32.9% | **3.0×** |
+| LIF | Temporal | 10% | 18.4% | **5.4×** |
+| Hodgkin-Huxley | Rate | 20% | 36.8% | **2.7×** |
+| Hodgkin-Huxley | Temporal | 10% | 18.7% | **5.4×** |
+| Izhikevich | Rate | 16% | 29.6% | **3.4×** |
+| Izhikevich | Temporal | 9% | 16.7% | **6.0×** |
+
+**Key insight:** The input layer (Dense-256) accounts for 85% of all MACs (`200,704 / 234,752`), so the input spike rate dominates the energy estimate. Temporal coding achieves higher gains by encoding information in fewer spikes — at the cost of noise sensitivity.
+
+FLOPS in the chart represent per-timestep SNN operations as a percentage of ANN MACs, showing the sparsity benefit independently of the $E_\text{MAC}/E_\text{AC}$ weighting.
 
 ---
 
@@ -269,7 +300,7 @@ Host `dist/` on Vercel, Netlify, or GitHub Pages — no server needed.
 |---|---|
 | React 18 + Vite | UI framework and dev server |
 | Chart.js / react-chartjs-2 | Line, bar, and area charts |
-| TensorFlow.js | In-browser MNIST CNN training |
+| TensorFlow.js | In-browser MNIST MLP training (784 → 256 → 128 → 10) |
 | Canvas API | Custom spike raster plots |
 
 No external UI library. Styles are hand-written in `src/index.css`.
